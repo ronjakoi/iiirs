@@ -1,0 +1,181 @@
+use nom::{
+    Finish, IResult, Parser,
+    branch::{alt, permutation},
+    bytes::complete::tag,
+    character::complete::{char, digit0, digit1},
+    combinator::{all_consuming, map, map_res, opt, recognize},
+    sequence::{preceded, separated_pair, terminated},
+};
+use std::str::FromStr;
+
+/// Parse from text a floating point number that disallows Inf, NaN, e and
+/// negatives
+fn parse_iiif_float(input: &str) -> IResult<&str, f32> {
+    map_res(
+        alt((
+            recognize(digit1::<&str, _>),
+            recognize((digit0, char('.'), digit1)),
+        )),
+        str::parse,
+    )
+    .parse(input)
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Region {
+    Full,
+    Square,
+    Absolute { x: u32, y: u32, w: u32, h: u32 },
+    Percent { x: f32, y: f32, w: f32, h: f32 },
+}
+
+fn parse_int(input: &str) -> IResult<&str, u32> {
+    map_res(digit1, |s: &str| s.parse()).parse(input)
+}
+
+fn parse_float_quad(input: &str) -> IResult<&str, [f32; 4]> {
+    let (rem, quad) = (
+        parse_iiif_float,
+        preceded(tag(","), parse_iiif_float),
+        preceded(tag(","), parse_iiif_float),
+        preceded(tag(","), parse_iiif_float),
+    )
+        .parse(input)?;
+    Ok((rem, [quad.0, quad.1, quad.2, quad.3]))
+}
+
+fn parse_int_quad(input: &str) -> IResult<&str, [u32; 4]> {
+    let (rem, quad) = (
+        parse_int,
+        preceded(tag(","), parse_int),
+        preceded(tag(","), parse_int),
+        preceded(tag(","), parse_int),
+    )
+        .parse(input)?;
+    Ok((rem, [quad.0, quad.1, quad.2, quad.3]))
+}
+
+impl FromStr for Region {
+    type Err = nom::error::Error<String>;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let region: Result<Self, nom::error::Error<_>> = match s {
+            "full" => Ok::<Region, Self::Err>(Self::Full),
+            "square" => Ok(Self::Square),
+            _ => {
+                if let Ok((_, quad)) =
+                    preceded(tag("pct:"), all_consuming(parse_float_quad))
+                        .parse(s)
+                        .finish()
+                {
+                    Ok(Self::Percent {
+                        x: quad[0],
+                        y: quad[1],
+                        w: quad[2],
+                        h: quad[3],
+                    })
+                } else {
+                    let (_, quad) =
+                        all_consuming(parse_int_quad).parse(s).finish()?;
+                    Ok(Self::Absolute {
+                        x: quad[0],
+                        y: quad[1],
+                        w: quad[2],
+                        h: quad[3],
+                    })
+                }
+            }
+        };
+        region.map_err(|e: nom::error::Error<_>| nom::error::Error {
+            input: e.input.to_string(),
+            code: e.code,
+        })
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Size {
+    allow_upscale: bool,
+    maintain_ratio: bool,
+    kind: SizeKind,
+}
+
+#[derive(Debug, PartialEq)]
+enum SizeKind {
+    Max,
+    Width(u32),
+    Height(u32),
+    Percent(f32),
+    WidthHeight { w: u32, h: u32 },
+}
+
+fn parse_upscale(input: &str) -> IResult<&str, bool> {
+    map(opt(tag("^")), |upscale| upscale.is_some()).parse(input)
+}
+
+fn parse_maintain_ratio(input: &str) -> IResult<&str, bool> {
+    map(opt(tag("!")), |maintain_ratio| maintain_ratio.is_some()).parse(input)
+}
+
+fn parse_sizekind(input: &str) -> IResult<&str, SizeKind> {
+    alt((
+        map(tag("max"), |_| SizeKind::Max),
+        map(separated_pair(parse_int, tag(","), parse_int), |(w, h)| {
+            SizeKind::WidthHeight { w, h }
+        }),
+        map(preceded(tag(","), parse_int), SizeKind::Height),
+        map(terminated(parse_int, tag(",")), SizeKind::Width),
+        map(preceded(tag("pct:"), parse_iiif_float), |pct| {
+            SizeKind::Percent(pct)
+        }),
+    ))
+    .parse(input)
+}
+
+fn parse_size(input: &str) -> IResult<&str, Size> {
+    let (i, (allow_upscale, maintain_ratio)) =
+        permutation((parse_upscale, parse_maintain_ratio)).parse(input)?;
+    let (_, image_size) = all_consuming(parse_sizekind).parse(i)?;
+
+    Ok((
+        "",
+        Size {
+            allow_upscale,
+            maintain_ratio,
+            kind: image_size,
+        },
+    ))
+}
+
+impl FromStr for Size {
+    type Err = nom::error::Error<String>;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (_, size) = parse_size(s).finish()?;
+        Ok(size)
+    }
+}
+
+enum Quality {
+    Color,
+    Gray,
+    Bitonal,
+    Default,
+}
+
+impl FromStr for Quality {
+    type Err = nom::error::Error<String>;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let res: Result<(_, _), nom::error::Error<_>> = alt((
+            map(tag("color"), |_| Self::Color),
+            map(tag("gray"), |_| Self::Gray),
+            map(tag("bitonal"), |_| Self::Bitonal),
+            map(tag("default"), |_| Self::Default),
+        ))
+        .parse(s)
+        .finish();
+
+        Ok(res?.1)
+    }
+}
