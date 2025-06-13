@@ -8,6 +8,13 @@ use nom::{
 };
 use std::str::FromStr;
 
+pub struct ImageRequest {
+    region: Region,
+    size: Size,
+    rotation: Rotation,
+    quality: Quality,
+}
+
 /// Parse from text a floating point number that disallows Inf, NaN, e and
 /// negatives
 fn parse_iiif_float(input: &str) -> IResult<&str, f32> {
@@ -167,15 +174,34 @@ impl FromStr for Quality {
     type Err = nom::error::Error<String>;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let res: Result<(_, _), nom::error::Error<_>> = alt((
+        let res: Result<(_, _), nom::error::Error<_>> = all_consuming(alt((
             map(tag("color"), |_| Self::Color),
             map(tag("gray"), |_| Self::Gray),
             map(tag("bitonal"), |_| Self::Bitonal),
             map(tag("default"), |_| Self::Default),
-        ))
+        )))
         .parse(s)
         .finish();
 
         Ok(res?.1)
+    }
+}
+
+struct Rotation {
+    deg: f32,
+    mirror: bool,
+}
+
+impl FromStr for Rotation {
+    type Err = nom::error::Error<String>;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (_, (mirror, deg)) = all_consuming((
+            map(opt(tag("!")), |m| m.is_some()),
+            parse_iiif_float,
+        ))
+        .parse(s)
+        .finish()?;
+        Ok(Self { deg, mirror })
     }
 }
