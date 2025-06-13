@@ -6,6 +6,7 @@ use nom::{
     combinator::{all_consuming, map, map_res, opt, recognize},
     sequence::{preceded, separated_pair, terminated},
 };
+use std::num::NonZeroU32;
 use std::str::FromStr;
 
 pub struct ImageRequest {
@@ -32,15 +33,25 @@ fn parse_iiif_float(input: &str) -> IResult<&str, f32> {
 pub enum Region {
     Full,
     Square,
-    Absolute { x: u32, y: u32, w: u32, h: u32 },
-    Percent { x: f32, y: f32, w: f32, h: f32 },
+    Absolute {
+        x: u32,
+        y: u32,
+        w: NonZeroU32,
+        h: NonZeroU32,
+    },
+    Percent {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    },
 }
 
-fn parse_int(input: &str) -> IResult<&str, u32> {
+fn parse_unsigned<T: FromStr>(input: &str) -> IResult<&str, T> {
     map_res(digit1, |s: &str| s.parse()).parse(input)
 }
 
-fn parse_float_quad(input: &str) -> IResult<&str, [f32; 4]> {
+fn parse_float_quad(input: &str) -> IResult<&str, (f32, f32, f32, f32)> {
     let (rem, quad) = (
         parse_iiif_float,
         preceded(tag(","), parse_iiif_float),
@@ -48,48 +59,56 @@ fn parse_float_quad(input: &str) -> IResult<&str, [f32; 4]> {
         preceded(tag(","), parse_iiif_float),
     )
         .parse(input)?;
-    Ok((rem, [quad.0, quad.1, quad.2, quad.3]))
+    Ok((rem, quad))
 }
 
-fn parse_int_quad(input: &str) -> IResult<&str, [u32; 4]> {
+fn parse_nonzerou32(input: &str) -> IResult<&str, NonZeroU32> {
+    map_res(parse_unsigned, |x: u32| NonZeroU32::try_from(x)).parse(input)
+}
+
+fn parse_int_xywh(
+    input: &str,
+) -> IResult<&str, (u32, u32, NonZeroU32, NonZeroU32)> {
     let (rem, quad) = (
-        parse_int,
-        preceded(tag(","), parse_int),
-        preceded(tag(","), parse_int),
-        preceded(tag(","), parse_int),
+        parse_unsigned,
+        preceded(tag(","), parse_unsigned),
+        preceded(tag(","), parse_nonzerou32),
+        preceded(tag(","), parse_nonzerou32),
     )
         .parse(input)?;
-    Ok((rem, [quad.0, quad.1, quad.2, quad.3]))
+    Ok((rem, quad))
+}
+
+fn parse_int_quad(input: &str) -> IResult<&str, (u32, u32, u32, u32)> {
+    let (rem, quad) = (
+        parse_unsigned,
+        preceded(tag(","), parse_unsigned),
+        preceded(tag(","), parse_unsigned),
+        preceded(tag(","), parse_unsigned),
+    )
+        .parse(input)?;
+    Ok((rem, quad))
 }
 
 impl FromStr for Region {
     type Err = nom::error::Error<String>;
 
+    #[allow(clippy::many_single_char_names)]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let region: Result<Self, nom::error::Error<_>> = match s {
             "full" => Ok::<Region, Self::Err>(Self::Full),
             "square" => Ok(Self::Square),
             _ => {
-                if let Ok((_, quad)) =
+                if let Ok((_, (x, y, w, h))) =
                     preceded(tag("pct:"), all_consuming(parse_float_quad))
                         .parse(s)
                         .finish()
                 {
-                    Ok(Self::Percent {
-                        x: quad[0],
-                        y: quad[1],
-                        w: quad[2],
-                        h: quad[3],
-                    })
+                    Ok(Self::Percent { x, y, w, h })
                 } else {
-                    let (_, quad) =
-                        all_consuming(parse_int_quad).parse(s).finish()?;
-                    Ok(Self::Absolute {
-                        x: quad[0],
-                        y: quad[1],
-                        w: quad[2],
-                        h: quad[3],
-                    })
+                    let (_, (x, y, w, h)) =
+                        all_consuming(parse_int_xywh).parse(s).finish()?;
+                    Ok(Self::Absolute { x, y, w, h })
                 }
             }
         };
@@ -110,10 +129,10 @@ pub struct Size {
 #[derive(Debug, PartialEq)]
 enum SizeKind {
     Max,
-    Width(u32),
-    Height(u32),
+    Width(NonZeroU32),
+    Height(NonZeroU32),
     Percent(f32),
-    WidthHeight { w: u32, h: u32 },
+    WidthHeight { w: NonZeroU32, h: NonZeroU32 },
 }
 
 fn parse_upscale(input: &str) -> IResult<&str, bool> {
@@ -127,11 +146,12 @@ fn parse_maintain_ratio(input: &str) -> IResult<&str, bool> {
 fn parse_sizekind(input: &str) -> IResult<&str, SizeKind> {
     alt((
         map(tag("max"), |_| SizeKind::Max),
-        map(separated_pair(parse_int, tag(","), parse_int), |(w, h)| {
-            SizeKind::WidthHeight { w, h }
-        }),
-        map(preceded(tag(","), parse_int), SizeKind::Height),
-        map(terminated(parse_int, tag(",")), SizeKind::Width),
+        map(
+            separated_pair(parse_nonzerou32, tag(","), parse_nonzerou32),
+            |(w, h)| SizeKind::WidthHeight { w, h },
+        ),
+        map(preceded(tag(","), parse_nonzerou32), SizeKind::Height),
+        map(terminated(parse_nonzerou32, tag(",")), SizeKind::Width),
         map(preceded(tag("pct:"), parse_iiif_float), |pct| {
             SizeKind::Percent(pct)
         }),
