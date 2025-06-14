@@ -4,4 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+axum = "0.8.4"
 nom = "8.0.0"
+tokio = { version = "1.45.1", features = ["rt", "rt-multi-thread"] }

@@ -1,19 +1,56 @@
 use nom::{
     Finish, IResult, Parser,
     branch::{alt, permutation},
-    bytes::complete::tag,
-    character::complete::{char, digit0, digit1},
+    bytes::complete::{tag, take_until1},
+    character::complete::{alphanumeric1, char, digit0, digit1},
     combinator::{all_consuming, map, map_res, opt, recognize},
     sequence::{preceded, separated_pair, terminated},
 };
-use std::num::NonZeroU32;
-use std::str::FromStr;
+use std::{num::NonZeroU32, path::PathBuf, str::FromStr};
 
+#[derive(Debug, PartialEq)]
 pub struct ImageRequest {
-    region: Region,
-    size: Size,
-    rotation: Rotation,
-    quality: Quality,
+    pub identifier: PathBuf,
+    pub region: Region,
+    pub size: Size,
+    pub rotation: Rotation,
+    pub quality: Quality,
+    pub format: String,
+}
+
+impl FromStr for ImageRequest {
+    type Err = nom::error::Error<String>;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (_, request) = parse_image_request(s).finish()?;
+        Ok(request)
+    }
+}
+
+fn parse_image_request(input: &str) -> IResult<&str, ImageRequest> {
+    let (i, identifier) =
+        terminated(parse_identifier, tag("/")).parse(input)?;
+    let (i, region) = terminated(parse_region, tag("/")).parse(i)?;
+    let (i, size) = terminated(parse_size, tag("/")).parse(i)?;
+    let (i, rotation) = terminated(parse_rotation, tag("/")).parse(i)?;
+    let (i, (quality, format)) =
+        all_consuming(separated_pair(parse_quality, tag("."), parse_format))
+            .parse(i)?;
+    Ok((
+        i,
+        ImageRequest {
+            identifier,
+            region,
+            size,
+            rotation,
+            quality,
+            format,
+        },
+    ))
+}
+
+fn parse_identifier(input: &str) -> IResult<&str, PathBuf> {
+    map(take_until1("/"), PathBuf::from).parse(input)
 }
 
 /// Parse from text a floating point number that disallows Inf, NaN, e and
@@ -90,32 +127,30 @@ fn parse_int_quad(input: &str) -> IResult<&str, (u32, u32, u32, u32)> {
     Ok((rem, quad))
 }
 
+fn parse_region(input: &str) -> IResult<&str, Region> {
+    alt((
+        map(tag("full"), |_| Region::Full),
+        map(tag("square"), |_| Region::Square),
+        map(preceded(tag("pct:"), parse_float_quad), |(x, y, w, h)| {
+            Region::Percent { x, y, w, h }
+        }),
+        map(parse_int_xywh, |(x, y, w, h)| Region::Absolute {
+            x,
+            y,
+            w,
+            h,
+        }),
+    ))
+    .parse(input)
+}
+
 impl FromStr for Region {
     type Err = nom::error::Error<String>;
 
     #[allow(clippy::many_single_char_names)]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let region: Result<Self, nom::error::Error<_>> = match s {
-            "full" => Ok::<Region, Self::Err>(Self::Full),
-            "square" => Ok(Self::Square),
-            _ => {
-                if let Ok((_, (x, y, w, h))) =
-                    preceded(tag("pct:"), all_consuming(parse_float_quad))
-                        .parse(s)
-                        .finish()
-                {
-                    Ok(Self::Percent { x, y, w, h })
-                } else {
-                    let (_, (x, y, w, h)) =
-                        all_consuming(parse_int_xywh).parse(s).finish()?;
-                    Ok(Self::Absolute { x, y, w, h })
-                }
-            }
-        };
-        region.map_err(|e: nom::error::Error<_>| nom::error::Error {
-            input: e.input.to_string(),
-            code: e.code,
-        })
+        let (_, region) = parse_region(s).finish()?;
+        Ok(region)
     }
 }
 
@@ -150,8 +185,8 @@ fn parse_sizekind(input: &str) -> IResult<&str, SizeKind> {
             separated_pair(parse_nonzerou32, tag(","), parse_nonzerou32),
             |(w, h)| SizeKind::WidthHeight { w, h },
         ),
-        map(preceded(tag(","), parse_nonzerou32), SizeKind::Height),
-        map(terminated(parse_nonzerou32, tag(",")), SizeKind::Width),
+        map(terminated(parse_nonzerou32, tag(",")), SizeKind::Height),
+        map(preceded(tag(","), parse_nonzerou32), SizeKind::Width),
         map(preceded(tag("pct:"), parse_iiif_float), |pct| {
             SizeKind::Percent(pct)
         }),
@@ -162,10 +197,10 @@ fn parse_sizekind(input: &str) -> IResult<&str, SizeKind> {
 fn parse_size(input: &str) -> IResult<&str, Size> {
     let (i, (allow_upscale, maintain_ratio)) =
         permutation((parse_upscale, parse_maintain_ratio)).parse(input)?;
-    let (_, image_size) = all_consuming(parse_sizekind).parse(i)?;
+    let (i, image_size) = parse_sizekind(i)?;
 
     Ok((
-        "",
+        i,
         Size {
             allow_upscale,
             maintain_ratio,
@@ -183,45 +218,59 @@ impl FromStr for Size {
     }
 }
 
-enum Quality {
+#[derive(Debug, PartialEq)]
+pub enum Quality {
     Color,
     Gray,
     Bitonal,
     Default,
 }
 
+fn parse_quality(input: &str) -> IResult<&str, Quality> {
+    alt((
+        map(tag("color"), |_| Quality::Color),
+        map(tag("gray"), |_| Quality::Gray),
+        map(tag("bitonal"), |_| Quality::Bitonal),
+        map(tag("default"), |_| Quality::Default),
+    ))
+    .parse(input)
+}
+
 impl FromStr for Quality {
     type Err = nom::error::Error<String>;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let res: Result<(_, _), nom::error::Error<_>> = all_consuming(alt((
-            map(tag("color"), |_| Self::Color),
-            map(tag("gray"), |_| Self::Gray),
-            map(tag("bitonal"), |_| Self::Bitonal),
-            map(tag("default"), |_| Self::Default),
-        )))
-        .parse(s)
-        .finish();
-
-        Ok(res?.1)
+        let (_, quality) = parse_quality(s).finish()?;
+        Ok(quality)
     }
 }
 
-struct Rotation {
+#[derive(Debug, PartialEq)]
+pub struct Rotation {
     deg: f32,
     mirror: bool,
+}
+
+fn parse_rotation(input: &str) -> IResult<&str, Rotation> {
+    map((opt(tag("!")), parse_iiif_float), |(m, deg)| Rotation {
+        deg,
+        mirror: m.is_some(),
+    })
+    .parse(input)
 }
 
 impl FromStr for Rotation {
     type Err = nom::error::Error<String>;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (_, (mirror, deg)) = all_consuming((
-            map(opt(tag("!")), |m| m.is_some()),
-            parse_iiif_float,
-        ))
-        .parse(s)
-        .finish()?;
+        let (_, (mirror, deg)) =
+            (map(opt(tag("!")), |m| m.is_some()), parse_iiif_float)
+                .parse(s)
+                .finish()?;
         Ok(Self { deg, mirror })
     }
+}
+
+fn parse_format(input: &str) -> IResult<&str, String> {
+    map(alphanumeric1, String::from).parse(input)
 }
