@@ -58,8 +58,8 @@ fn parse_identifier(input: &str) -> IResult<&str, PathBuf> {
 fn parse_iiif_float(input: &str) -> IResult<&str, f32> {
     map_res(
         alt((
-            recognize(digit1::<&str, _>),
             recognize((digit0, char('.'), digit1)),
+            recognize(digit1::<&str, _>),
         )),
         str::parse,
     )
@@ -111,17 +111,6 @@ fn parse_int_xywh(
         preceded(tag(","), parse_unsigned),
         preceded(tag(","), parse_nonzerou32),
         preceded(tag(","), parse_nonzerou32),
-    )
-        .parse(input)?;
-    Ok((rem, quad))
-}
-
-fn parse_int_quad(input: &str) -> IResult<&str, (u32, u32, u32, u32)> {
-    let (rem, quad) = (
-        parse_unsigned,
-        preceded(tag(","), parse_unsigned),
-        preceded(tag(","), parse_unsigned),
-        preceded(tag(","), parse_unsigned),
     )
         .parse(input)?;
     Ok((rem, quad))
@@ -259,18 +248,39 @@ fn parse_rotation(input: &str) -> IResult<&str, Rotation> {
     .parse(input)
 }
 
-impl FromStr for Rotation {
-    type Err = nom::error::Error<String>;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (_, (mirror, deg)) =
-            (map(opt(tag("!")), |m| m.is_some()), parse_iiif_float)
-                .parse(s)
-                .finish()?;
-        Ok(Self { deg, mirror })
-    }
-}
-
 fn parse_format(input: &str) -> IResult<&str, String> {
     map(alphanumeric1, String::from).parse(input)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_rotation() {
+        assert_eq!(
+            parse_rotation("0"),
+            Ok((
+                "",
+                Rotation {
+                    deg: 0.0,
+                    mirror: false
+                }
+            ))
+        );
+
+        assert_eq!(
+            parse_rotation("!25.5"),
+            Ok((
+                "",
+                Rotation {
+                    deg: 25.5,
+                    mirror: true
+                }
+            ))
+        );
+
+        assert!(parse_rotation("flip").is_err());
+        assert!(parse_rotation("-180").is_err());
+    }
 }
