@@ -8,14 +8,15 @@ use std::{
 
 use crate::api::image::ImageRequest;
 
-trait ImageLoader {
+pub trait ImageLoader {
     fn get_image(
         &self,
         prefix: &OsStr,
-        request: ImageRequest,
-    ) -> Result<impl Read>;
+        request: &ImageRequest,
+    ) -> Result<Box<dyn Read>>;
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct LocalLoader {
     image_dirs: HashMap<OsString, OsString>,
 }
@@ -32,10 +33,7 @@ impl LocalLoader {
     }
 }
 
-impl<S> FromIterator<(S, S)> for LocalLoader
-where
-    S: Into<OsString>,
-{
+impl<S: Into<OsString>> FromIterator<(S, S)> for LocalLoader {
     fn from_iter<T: IntoIterator<Item = (S, S)>>(iter: T) -> Self {
         let image_dirs = iter
             .into_iter()
@@ -49,32 +47,30 @@ impl ImageLoader for LocalLoader {
     fn get_image(
         &self,
         prefix: &OsStr,
-        request: ImageRequest,
-    ) -> Result<impl Read> {
+        request: &ImageRequest,
+    ) -> Result<Box<dyn Read>> {
         let dir = PathBuf::from(
             self.image_dirs
                 .get(prefix)
                 .ok_or(Error::from(ErrorKind::NotFound))?,
         );
-        let mut file_name: OsString = request.identifier.into();
+        let mut file_name = OsString::from(&request.identifier);
         file_name.push(".tif");
         let file_path = find_file(&dir, &file_name)?;
-        File::open(&file_path)
+        Ok(Box::new(File::open(&file_path)?))
     }
 }
 
 fn find_file(dir: &Path, file_name: &OsStr) -> Result<PathBuf> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        match path.file_name() {
-            Some(name) => {
-                if name == file_name {
-                    return Ok(path.into());
-                }
-            }
-            None => continue,
+    let mut file_path = PathBuf::from(dir);
+    file_path.push(file_name);
+    if file_path.exists() {
+        if file_path.is_file() {
+            Ok(file_path)
+        } else {
+            Err(Error::from(ErrorKind::InvalidFilename))
         }
+    } else {
+        Err(Error::from(ErrorKind::NotFound))
     }
-    Err(Error::from(ErrorKind::NotFound))
 }
