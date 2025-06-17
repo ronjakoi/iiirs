@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
-    fs::{self, File},
+    fs::File,
     io::{Error, ErrorKind, Read, Result},
     path::{Path, PathBuf},
 };
