@@ -1,12 +1,26 @@
+use axum::Form;
+use image::ImageEncoder;
+use image::ImageFormat;
+use image::codecs::farbfeld::FarbfeldEncoder;
+use image::codecs::gif::GifEncoder;
+use image::codecs::ico::IcoEncoder;
+use image::codecs::jpeg::JpegEncoder;
+use image::codecs::pnm::PnmEncoder;
+use image::codecs::qoi::QoiEncoder;
+use image::codecs::tga::TgaEncoder;
+use image::codecs::tiff::TiffEncoder;
+use image::codecs::webp::WebPEncoder;
+use image::codecs::{bmp::BmpEncoder, openexr::OpenExrEncoder};
 use nom::{
     Finish, IResult, Parser,
     branch::{alt, permutation},
-    bytes::complete::{tag, take_until1},
+    bytes::complete::{tag, tag_no_case, take_until1},
     character::complete::{alphanumeric1, char, digit0, digit1},
     combinator::{all_consuming, map, map_res, opt, recognize},
     sequence::{preceded, separated_pair, terminated},
 };
-use std::{num::NonZeroU32, path::PathBuf, str::FromStr};
+use std::io::{Seek, Write};
+use std::{io::BufWriter, num::NonZeroU32, path::PathBuf, str::FromStr};
 
 #[derive(Debug, PartialEq)]
 pub struct ImageRequest {
@@ -15,7 +29,46 @@ pub struct ImageRequest {
     pub size: Size,
     pub rotation: Rotation,
     pub quality: Quality,
-    pub format: String,
+    pub format: ImageFormat,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Region {
+    Full,
+    Square,
+    Absolute {
+        x: u32,
+        y: u32,
+        w: NonZeroU32,
+        h: NonZeroU32,
+    },
+    Percent {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    },
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Size {
+    allow_upscale: bool,
+    maintain_ratio: bool,
+    kind: SizeKind,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Quality {
+    Color,
+    Gray,
+    Bitonal,
+    Default,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Rotation {
+    deg: f32,
+    mirror: bool,
 }
 
 impl FromStr for ImageRequest {
@@ -64,24 +117,6 @@ fn parse_iiif_float(input: &str) -> IResult<&str, f32> {
         str::parse,
     )
     .parse(input)
-}
-
-#[derive(Debug, PartialEq)]
-pub enum Region {
-    Full,
-    Square,
-    Absolute {
-        x: u32,
-        y: u32,
-        w: NonZeroU32,
-        h: NonZeroU32,
-    },
-    Percent {
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-    },
 }
 
 fn parse_unsigned<T: FromStr>(input: &str) -> IResult<&str, T> {
@@ -144,13 +179,6 @@ impl FromStr for Region {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Size {
-    allow_upscale: bool,
-    maintain_ratio: bool,
-    kind: SizeKind,
-}
-
-#[derive(Debug, PartialEq)]
 enum SizeKind {
     Max,
     Width(NonZeroU32),
@@ -207,14 +235,6 @@ impl FromStr for Size {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub enum Quality {
-    Color,
-    Gray,
-    Bitonal,
-    Default,
-}
-
 fn parse_quality(input: &str) -> IResult<&str, Quality> {
     alt((
         map(tag("color"), |_| Quality::Color),
@@ -234,12 +254,6 @@ impl FromStr for Quality {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub struct Rotation {
-    deg: f32,
-    mirror: bool,
-}
-
 fn parse_rotation(input: &str) -> IResult<&str, Rotation> {
     map((opt(tag("!")), parse_iiif_float), |(m, deg)| Rotation {
         deg,
@@ -248,8 +262,12 @@ fn parse_rotation(input: &str) -> IResult<&str, Rotation> {
     .parse(input)
 }
 
-fn parse_format(input: &str) -> IResult<&str, String> {
-    map(alphanumeric1, String::from).parse(input)
+pub fn parse_format(input: &str) -> IResult<&str, ImageFormat> {
+    map_res(alphanumeric1, |ext| {
+        ImageFormat::from_extension(ext)
+            .ok_or(nom::error::Error::new(input, nom::error::ErrorKind::MapRes))
+    })
+    .parse(input)
 }
 
 #[cfg(test)]

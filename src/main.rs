@@ -7,10 +7,12 @@ use axum::{
     response::Result,
     routing::get,
 };
+use image::ImageEncoder;
 use tokio::sync::RwLock;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -44,16 +46,18 @@ async fn get_image(
         .read()
         .await;
 
-    let mut image_data = vec![];
-    loader
+    let mut image_data = Cursor::new(vec![]);
+    let image = loader
         .get_image(&os_prefix, &req)
-        .map_err(|_| StatusCode::NOT_FOUND)?
-        .read_to_end(&mut image_data)
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    image
+        .write_to(&mut image_data, req.format)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let mut headers = HeaderMap::new();
-    headers.insert(CONTENT_TYPE, "image/tiff".parse().unwrap());
 
-    Ok((headers, image_data))
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, req.format.to_mime_type().parse().unwrap());
+
+    Ok((headers, image_data.into_inner()))
 }
 
 #[tokio::main]

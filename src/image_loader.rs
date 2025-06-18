@@ -1,3 +1,4 @@
+use image::{DynamicImage, ImageDecoder, ImageEncoder, ImageReader};
 use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
@@ -13,7 +14,7 @@ pub trait ImageLoader {
         &self,
         prefix: &OsStr,
         request: &ImageRequest,
-    ) -> Result<Box<dyn Read>>;
+    ) -> Result<DynamicImage>;
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -48,29 +49,17 @@ impl ImageLoader for LocalLoader {
         &self,
         prefix: &OsStr,
         request: &ImageRequest,
-    ) -> Result<Box<dyn Read>> {
-        let dir = PathBuf::from(
+    ) -> Result<DynamicImage> {
+        let dir = OsString::from(
             self.image_dirs
                 .get(prefix)
                 .ok_or(Error::from(ErrorKind::NotFound))?,
         );
         let mut file_name = OsString::from(&request.identifier);
         file_name.push(".tif");
-        let file_path = find_file(&dir, &file_name)?;
-        Ok(Box::new(File::open(&file_path)?))
-    }
-}
 
-fn find_file(dir: &Path, file_name: &OsStr) -> Result<PathBuf> {
-    let mut file_path = PathBuf::from(dir);
-    file_path.push(file_name);
-    if file_path.exists() {
-        if file_path.is_file() {
-            Ok(file_path)
-        } else {
-            Err(Error::from(ErrorKind::InvalidFilename))
-        }
-    } else {
-        Err(Error::from(ErrorKind::NotFound))
+        let file_path = PathBuf::from_iter([&dir, &file_name]);
+        let image = ImageReader::open(&file_path)?.decode().unwrap();
+        Ok(image)
     }
 }
