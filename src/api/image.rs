@@ -4,7 +4,7 @@ use nom::{
     branch::{alt, permutation},
     bytes::complete::{tag, take_until1},
     character::complete::{alphanumeric1, char, digit0, digit1},
-    combinator::{all_consuming, map, map_res, opt, recognize},
+    combinator::{all_consuming, map, map_res, opt, recognize, verify},
     sequence::{preceded, separated_pair, terminated},
 };
 use std::{num::NonZeroU32, path::PathBuf, str::FromStr};
@@ -19,8 +19,9 @@ pub struct ImageRequest {
     pub format: ImageFormat,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Default)]
 pub enum Region {
+    #[default]
     Full,
     Square,
     Absolute {
@@ -37,25 +38,26 @@ pub enum Region {
     },
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Default)]
 pub struct Size {
-    allow_upscale: bool,
-    maintain_ratio: bool,
-    kind: SizeKind,
+    pub allow_upscale: bool,
+    pub maintain_ratio: bool,
+    pub kind: SizeKind,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Default)]
 pub enum Quality {
+    #[default]
     Color,
     Gray,
     Bitonal,
     Default,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Default)]
 pub struct Rotation {
-    deg: f32,
-    mirror: bool,
+    pub deg: u32,
+    pub mirror: bool,
 }
 
 impl FromStr for ImageRequest {
@@ -165,13 +167,17 @@ impl FromStr for Region {
     }
 }
 
-#[derive(Debug, PartialEq)]
-enum SizeKind {
+#[derive(Debug, PartialEq, Default)]
+pub enum SizeKind {
+    #[default]
     Max,
     Width(NonZeroU32),
     Height(NonZeroU32),
     Percent(f32),
-    WidthHeight { w: NonZeroU32, h: NonZeroU32 },
+    WidthHeight {
+        w: NonZeroU32,
+        h: NonZeroU32,
+    },
 }
 
 fn parse_upscale(input: &str) -> IResult<&str, bool> {
@@ -242,10 +248,16 @@ impl FromStr for Quality {
 }
 
 fn parse_rotation(input: &str) -> IResult<&str, Rotation> {
-    map((opt(tag("!")), parse_iiif_float), |(m, deg)| Rotation {
-        deg,
-        mirror: m.is_some(),
-    })
+    verify(
+        map(
+            (opt(tag("!")), parse_unsigned),
+            |(m, deg): (Option<&str>, u32)| Rotation {
+                deg,
+                mirror: m.is_some(),
+            },
+        ),
+        |rot| matches!(rot.deg, 0 | 90 | 180 | 270 | 360),
+    )
     .parse(input)
 }
 

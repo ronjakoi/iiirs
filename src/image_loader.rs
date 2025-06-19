@@ -8,6 +8,8 @@ use std::{
 
 use crate::api::image::ImageRequest;
 
+const ON_DISK_FORMAT_EXT: &'static str = "tif";
+
 pub trait ImageLoader {
     fn get_image(
         &self,
@@ -54,10 +56,15 @@ impl ImageLoader for LocalLoader {
                 .get(prefix)
                 .ok_or(Error::from(ErrorKind::NotFound))?,
         );
-        let mut file_name = OsString::from(&request.identifier);
-        file_name.push(".tif");
-
-        let file_path = PathBuf::from_iter([&dir, &file_name]);
+        let mut file_path = PathBuf::with_capacity(
+            &dir.len()
+                + &request.identifier.as_os_str().len()
+                + ".".len()
+                + ON_DISK_FORMAT_EXT.len(),
+        );
+        file_path.push(&dir);
+        file_path.push(&request.identifier);
+        file_path.set_extension(ON_DISK_FORMAT_EXT);
         let image = ImageReader::open(&file_path)?.decode().unwrap();
         Ok(image)
     }

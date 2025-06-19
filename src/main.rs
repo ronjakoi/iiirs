@@ -17,8 +17,10 @@ use std::sync::Arc;
 
 mod api;
 mod image_loader;
+mod image_ops;
 use api::image::*;
 use image_loader::{ImageLoader, LocalLoader};
+use image_ops::*;
 
 #[derive(Clone)]
 struct AppState {
@@ -45,10 +47,23 @@ async fn get_image(
         .read()
         .await;
 
-    let mut image_data = Cursor::new(vec![]);
-    let image = loader
+    let mut image = loader
         .get_image(&os_prefix, &req)
         .map_err(|_| StatusCode::NOT_FOUND)?;
+
+    if req.region != Region::default() {
+        image = crop_image(image, req.region);
+    }
+
+    if req.size != Size::default() {
+        image = resize_image(image, req.size)?;
+    }
+
+    if req.rotation != Rotation::default() {
+        rotate_image(&mut image, req.rotation)?;
+    }
+
+    let mut image_data = Cursor::new(vec![]);
     image
         .write_to(&mut image_data, req.format)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
