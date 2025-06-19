@@ -1,10 +1,9 @@
-use image::{DynamicImage, ImageDecoder, ImageEncoder, ImageReader};
+use image::{DynamicImage, ImageReader};
 use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
-    fs::File,
-    io::{Error, ErrorKind, Read, Result},
-    path::{Path, PathBuf},
+    io::{Error, ErrorKind, Result},
+    path::PathBuf,
 };
 
 use crate::api::image::ImageRequest;

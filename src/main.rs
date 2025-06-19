@@ -7,7 +7,6 @@ use axum::{
     response::Result,
     routing::get,
 };
-use image::ImageEncoder;
 use tokio::sync::RwLock;
 
 use std::collections::HashMap;
@@ -55,7 +54,13 @@ async fn get_image(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let mut headers = HeaderMap::new();
-    headers.insert(CONTENT_TYPE, req.format.to_mime_type().parse().unwrap());
+    headers.insert(
+        CONTENT_TYPE,
+        req.format
+            .to_mime_type()
+            .parse()
+            .expect("failed to parse mime type"),
+    );
 
     Ok((headers, image_data.into_inner()))
 }

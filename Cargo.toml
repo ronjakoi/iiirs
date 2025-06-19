@@ -2,6 +2,7 @@
 name = "iiirs"
 version = "0.1.0"
 edition = "2024"
+publish = false
 
 [dependencies]
 axum = { version = "0.8.4", features = ["macros"] }

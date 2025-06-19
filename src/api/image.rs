@@ -1,26 +1,13 @@
-use axum::Form;
-use image::ImageEncoder;
 use image::ImageFormat;
-use image::codecs::farbfeld::FarbfeldEncoder;
-use image::codecs::gif::GifEncoder;
-use image::codecs::ico::IcoEncoder;
-use image::codecs::jpeg::JpegEncoder;
-use image::codecs::pnm::PnmEncoder;
-use image::codecs::qoi::QoiEncoder;
-use image::codecs::tga::TgaEncoder;
-use image::codecs::tiff::TiffEncoder;
-use image::codecs::webp::WebPEncoder;
-use image::codecs::{bmp::BmpEncoder, openexr::OpenExrEncoder};
 use nom::{
     Finish, IResult, Parser,
     branch::{alt, permutation},
-    bytes::complete::{tag, tag_no_case, take_until1},
+    bytes::complete::{tag, take_until1},
     character::complete::{alphanumeric1, char, digit0, digit1},
     combinator::{all_consuming, map, map_res, opt, recognize},
     sequence::{preceded, separated_pair, terminated},
 };
-use std::io::{Seek, Write};
-use std::{io::BufWriter, num::NonZeroU32, path::PathBuf, str::FromStr};
+use std::{num::NonZeroU32, path::PathBuf, str::FromStr};
 
 #[derive(Debug, PartialEq)]
 pub struct ImageRequest {
