@@ -11,6 +11,8 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
 use walkdir::WalkDir;
 
 use crate::DEFAULT_USER_AGENT;
@@ -192,6 +194,32 @@ impl ProxyLoader {
             _ => None,
         }
     }
+
+    async fn write_in_cache(
+        &self,
+        image: &DynamicImage,
+    ) -> tokio::io::Result<()> {
+        use tokio::io::{Error, ErrorKind, Result};
+
+        let mut sha256 = Sha256::new();
+        sha256.update(&image.as_bytes());
+        let content_hash: ContentCacheKey = sha256.finalize().into();
+
+        let cache_path = cached_img_path(&self.cache_dir, &content_hash);
+
+        if cache_path.exists() {
+            Result::Err(Error::new(
+                ErrorKind::AlreadyExists,
+                "Cache file already exists",
+            ))
+        } else {
+            let leaf_dir = cache_path.parent().unwrap();
+            std::fs::create_dir_all(leaf_dir)?;
+            let mut cache_file = File::create(cache_path).await?;
+            cache_file.write_all(image.as_bytes()).await?;
+            Result::Ok(())
+        }
+    }
 }
 
 impl GenericImageLoader for ProxyLoader {
@@ -205,13 +233,14 @@ impl GenericImageLoader for ProxyLoader {
             .map_err(|_| ErrorKind::InvalidInput)?;
         let uri =
             String::from_utf8(uri).map_err(|_| ErrorKind::InvalidInput)?;
-        let mut sha256 = Sha256::new();
-        sha256.update(uri.as_bytes());
         let content_cache_key = self.uri_to_hash_key.get(&uri);
         let image = if let Some(key) = content_cache_key {
             self.get_from_cache(key)
+        } else if let Some(image) = self.get_from_uri(&uri).await {
+            self.write_in_cache(&image).await?;
+            Some(image)
         } else {
-            self.get_from_uri(&uri).await
+            None
         };
         image.ok_or(ErrorKind::NotFound.into())
     }
@@ -237,10 +266,11 @@ fn get_leaf_dirs<P: AsRef<Path>>(path: P) -> impl Iterator<Item = OsString> {
 }
 
 fn cached_img_path(cache: &Path, key: &ContentCacheKey) -> PathBuf {
-    let mut key_str = Vec::new();
-    base16ct::lower::encode_str(key, &mut key_str).unwrap();
-    let sub1 = OsStr::from_bytes(&key_str[0..1]);
-    let sub2 = OsStr::from_bytes(&key_str[2..3]);
+    const HEX_STR_LEN: usize = size_of::<ContentCacheKey>() * 2;
+    let mut key_str: [u8; HEX_STR_LEN] = [0; HEX_STR_LEN];
+    base16ct::lower::encode(key, &mut key_str).unwrap();
+    let sub1 = OsStr::from_bytes(&key_str[0..2]);
+    let sub2 = OsStr::from_bytes(&key_str[2..4]);
     let mut path = PathBuf::with_capacity(
         cache.as_os_str().len()
             + sub1.len()
