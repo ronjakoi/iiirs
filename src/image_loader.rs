@@ -11,8 +11,6 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
 use walkdir::WalkDir;
 
 use crate::DEFAULT_USER_AGENT;
@@ -31,7 +29,7 @@ pub enum ImageLoader {
 
 pub trait GenericImageLoader {
     async fn get_image(
-        &self,
+        &mut self,
         prefix: &str,
         request: &ImageRequest,
     ) -> Result<DynamicImage>;
@@ -48,13 +46,14 @@ type ContentCacheKey = Sha256Bytes;
 #[derive(Debug, Default)]
 pub struct ProxyLoader {
     cache_dir: PathBuf,
-    uri_to_hash_key: HashMap<String, Sha256Bytes>,
+    // TODO: move this to sqlite or redis or something
+    uri_to_hash_key: HashMap<String, (Sha256Bytes, ImageFormat)>,
     client: reqwest::Client,
 }
 
 impl GenericImageLoader for ImageLoader {
     async fn get_image(
-        &self,
+        &mut self,
         prefix: &str,
         request: &ImageRequest,
     ) -> Result<DynamicImage> {
@@ -97,7 +96,7 @@ where
 
 impl GenericImageLoader for LocalLoader {
     async fn get_image(
-        &self,
+        &mut self,
         prefix: &str,
         request: &ImageRequest,
     ) -> Result<DynamicImage> {
@@ -146,10 +145,15 @@ impl ProxyLoader {
         }
     }
 
-    fn get_from_cache(&self, key: &ContentCacheKey) -> Option<DynamicImage> {
+    fn get_from_cache(
+        &self,
+        key: &ContentCacheKey,
+        format: ImageFormat,
+    ) -> Option<DynamicImage> {
         let path = cached_img_path(&self.cache_dir, key);
         match ImageReader::open(&path) {
-            Ok(reader) => {
+            Ok(mut reader) => {
+                reader.set_format(format);
                 let image = reader.decode().unwrap_or_else(|_| {
                     panic!(
                         "ProxyLoader: {path:?} found in cache but failed to decode",
@@ -161,7 +165,10 @@ impl ProxyLoader {
         }
     }
 
-    async fn get_from_uri(&self, uri: &str) -> Option<DynamicImage> {
+    async fn get_from_uri(
+        &self,
+        uri: &str,
+    ) -> Option<(DynamicImage, ImageFormat)> {
         let response = self.client.get(uri).send().await.unwrap();
         match response.status() {
             StatusCode::OK => {
@@ -189,17 +196,19 @@ impl ProxyLoader {
                 let mut reader = ImageReader::new(Cursor::new(data));
                 reader.set_format(format);
 
-                Some(reader.decode().unwrap())
+                Some((reader.decode().unwrap(), format))
             }
             _ => None,
         }
     }
 
     async fn write_in_cache(
-        &self,
+        &mut self,
         image: &DynamicImage,
-    ) -> tokio::io::Result<()> {
-        use tokio::io::{Error, ErrorKind, Result};
+        uri: String,
+        format: ImageFormat,
+    ) -> Result<()> {
+        use std::io::{Error, ErrorKind, Result};
 
         let mut sha256 = Sha256::new();
         sha256.update(&image.as_bytes());
@@ -215,8 +224,9 @@ impl ProxyLoader {
         } else {
             let leaf_dir = cache_path.parent().unwrap();
             std::fs::create_dir_all(leaf_dir)?;
-            let mut cache_file = File::create(cache_path).await?;
-            cache_file.write_all(image.as_bytes()).await?;
+            image.save_with_format(cache_path, format).unwrap();
+
+            self.uri_to_hash_key.insert(uri, (content_hash, format));
             Result::Ok(())
         }
     }
@@ -224,7 +234,7 @@ impl ProxyLoader {
 
 impl GenericImageLoader for ProxyLoader {
     async fn get_image(
-        &self,
+        &mut self,
         _prefix: &str,
         request: &ImageRequest,
     ) -> Result<DynamicImage> {
@@ -233,11 +243,11 @@ impl GenericImageLoader for ProxyLoader {
             .map_err(|_| ErrorKind::InvalidInput)?;
         let uri =
             String::from_utf8(uri).map_err(|_| ErrorKind::InvalidInput)?;
-        let content_cache_key = self.uri_to_hash_key.get(&uri);
-        let image = if let Some(key) = content_cache_key {
-            self.get_from_cache(key)
-        } else if let Some(image) = self.get_from_uri(&uri).await {
-            self.write_in_cache(&image).await?;
+        let image = if let Some((key, format)) = self.uri_to_hash_key.get(&uri)
+        {
+            self.get_from_cache(key, *format)
+        } else if let Some((image, format)) = self.get_from_uri(&uri).await {
+            self.write_in_cache(&image, uri, format).await?;
             Some(image)
         } else {
             None
@@ -272,16 +282,11 @@ fn cached_img_path(cache: &Path, key: &ContentCacheKey) -> PathBuf {
     let sub1 = OsStr::from_bytes(&key_str[0..2]);
     let sub2 = OsStr::from_bytes(&key_str[2..4]);
     let mut path = PathBuf::with_capacity(
-        cache.as_os_str().len()
-            + sub1.len()
-            + sub2.len()
-            + key_str.len()
-            + ON_DISK_FORMAT_EXT.len(),
+        cache.as_os_str().len() + sub1.len() + sub2.len() + key_str.len(),
     );
     path.push(cache);
     path.push(sub1);
     path.push(sub2);
     path.push(OsStr::from_bytes(&key_str));
-    path.set_extension(ON_DISK_FORMAT_EXT);
     path
 }

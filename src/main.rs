@@ -42,17 +42,21 @@ async fn get_image(
     let mut img_file = PathBuf::from(&prefix);
     img_file.push(&req.identifier);
 
-    let loader = app_state
-        .image_loaders
-        .get(&prefix)
-        .ok_or(StatusCode::NOT_FOUND)?
-        .read()
-        .await;
+    let mut image = {
+        // This block is so that we drop the read-write lock guard on loader as
+        // soon as possible
+        let mut loader = app_state
+            .image_loaders
+            .get(&prefix)
+            .ok_or(StatusCode::NOT_FOUND)?
+            .write()
+            .await;
 
-    let mut image = loader
-        .get_image(&prefix, &req)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+        loader
+            .get_image(&prefix, &req)
+            .await
+            .map_err(|_| StatusCode::NOT_FOUND)?
+    };
 
     if req.region != Region::default() {
         image = crop_image(image, &req.region);
