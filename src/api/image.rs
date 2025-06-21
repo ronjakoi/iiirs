@@ -4,14 +4,14 @@ use nom::{
     branch::{alt, permutation},
     bytes::complete::{tag, take_until1},
     character::complete::{alphanumeric1, char, digit0, digit1},
-    combinator::{all_consuming, map, map_res, opt, recognize, verify},
+    combinator::{all_consuming, map, map_res, opt, recognize},
     sequence::{preceded, separated_pair, terminated},
 };
-use std::{num::NonZeroU32, path::PathBuf, str::FromStr};
+use std::{num::NonZeroU32, str::FromStr};
 
 #[derive(Debug, PartialEq)]
 pub struct ImageRequest {
-    pub identifier: PathBuf,
+    pub identifier: String,
     pub region: Region,
     pub size: Size,
     pub rotation: Rotation,
@@ -56,8 +56,18 @@ pub enum Quality {
 
 #[derive(Debug, PartialEq, Default)]
 pub struct Rotation {
-    pub deg: u32,
+    pub deg: RotationDeg,
     pub mirror: bool,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RotationDeg {
+    #[default]
+    Deg0,
+    Deg90,
+    Deg180,
+    Deg270,
 }
 
 impl FromStr for ImageRequest {
@@ -91,8 +101,8 @@ fn parse_image_request(input: &str) -> IResult<&str, ImageRequest> {
     ))
 }
 
-fn parse_identifier(input: &str) -> IResult<&str, PathBuf> {
-    map(take_until1("/"), PathBuf::from).parse(input)
+fn parse_identifier(input: &str) -> IResult<&str, String> {
+    map(take_until1("/"), String::from).parse(input)
 }
 
 /// Parse from text a floating point number that disallows Inf, NaN, e and
@@ -247,16 +257,23 @@ impl FromStr for Quality {
     }
 }
 
+fn parse_rotation_deg(input: &str) -> IResult<&str, RotationDeg> {
+    alt((
+        map(alt((tag("0"), tag("360"))), |_| RotationDeg::Deg0),
+        map(tag("90"), |_| RotationDeg::Deg90),
+        map(tag("180"), |_| RotationDeg::Deg180),
+        map(tag("270"), |_| RotationDeg::Deg270),
+    ))
+    .parse(input)
+}
+
 fn parse_rotation(input: &str) -> IResult<&str, Rotation> {
-    verify(
-        map(
-            (opt(tag("!")), parse_unsigned),
-            |(m, deg): (Option<&str>, u32)| Rotation {
-                deg,
-                mirror: m.is_some(),
-            },
-        ),
-        |rot| matches!(rot.deg, 0 | 90 | 180 | 270 | 360),
+    map(
+        (opt(tag("!")), parse_rotation_deg),
+        |(m, deg): (Option<&str>, RotationDeg)| Rotation {
+            deg,
+            mirror: m.is_some(),
+        },
     )
     .parse(input)
 }
@@ -280,18 +297,18 @@ mod tests {
             Ok((
                 "",
                 Rotation {
-                    deg: 0.0,
+                    deg: RotationDeg::Deg0,
                     mirror: false
                 }
             ))
         );
 
         assert_eq!(
-            parse_rotation("!25.5"),
+            parse_rotation("!25"),
             Ok((
                 "",
                 Rotation {
-                    deg: 25.5,
+                    deg: RotationDeg::Deg90,
                     mirror: true
                 }
             ))
@@ -299,5 +316,6 @@ mod tests {
 
         assert!(parse_rotation("flip").is_err());
         assert!(parse_rotation("-180").is_err());
+        assert!(parse_rotation("45").is_err());
     }
 }

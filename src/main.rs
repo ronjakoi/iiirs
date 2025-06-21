@@ -10,7 +10,6 @@ use axum::{
 use tokio::sync::RwLock;
 
 use std::collections::HashMap;
-use std::ffi::OsString;
 use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,14 +17,18 @@ use std::sync::Arc;
 mod api;
 mod image_loader;
 mod image_ops;
-use api::image::*;
-use image_loader::{ImageLoader, LocalLoader};
-use image_ops::*;
+use api::image::{ImageRequest, Region, Rotation, Size};
+use image_loader::{GenericImageLoader, ImageLoader, LocalLoader};
+use image_ops::{crop_image, resize_image, rotate_image};
+
+use crate::image_loader::ProxyLoader;
+
+const DEFAULT_USER_AGENT: &str =
+    concat!(env!("CARGO_PKG_NAME"), " v", env!("CARGO_PKG_VERSION"));
 
 #[derive(Clone)]
 struct AppState {
-    image_loaders:
-        HashMap<OsString, Arc<RwLock<dyn ImageLoader + Send + Sync>>>,
+    image_loaders: HashMap<String, Arc<RwLock<ImageLoader>>>,
 }
 
 #[axum::debug_handler]
@@ -39,28 +42,28 @@ async fn get_image(
     let mut img_file = PathBuf::from(&prefix);
     img_file.push(&req.identifier);
 
-    let os_prefix = OsString::from(&prefix);
     let loader = app_state
         .image_loaders
-        .get(&os_prefix)
+        .get(&prefix)
         .ok_or(StatusCode::NOT_FOUND)?
         .read()
         .await;
 
     let mut image = loader
-        .get_image(&os_prefix, &req)
+        .get_image(&prefix, &req)
+        .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
     if req.region != Region::default() {
-        image = crop_image(image, req.region);
+        image = crop_image(image, &req.region);
     }
 
     if req.size != Size::default() {
-        image = resize_image(image, req.size)?;
+        image = resize_image(image, &req.size)?;
     }
 
     if req.rotation != Rotation::default() {
-        rotate_image(&mut image, req.rotation)?;
+        rotate_image(&mut image, &req.rotation);
     }
 
     let mut image_data = Cursor::new(vec![]);
@@ -82,13 +85,13 @@ async fn get_image(
 
 #[tokio::main]
 async fn main() {
-    let loader = LocalLoader::from_iter([("test", "./")]);
+    let local = ImageLoader::Local(LocalLoader::from_iter([("test", "./")]));
+    let proxy = ImageLoader::Proxy(ProxyLoader::new("proxy", "./proxy_cache"));
     let state = AppState {
-        image_loaders: HashMap::from([(
-            OsString::from("test"),
-            Arc::new(RwLock::new(loader))
-                as Arc<RwLock<dyn ImageLoader + Send + Sync>>,
-        )]),
+        image_loaders: HashMap::from([
+            (String::from("test"), Arc::new(RwLock::new(local))),
+            (String::from("proxy"), Arc::new(RwLock::new(proxy))),
+        ]),
     };
     let app = Router::new()
         .route("/iiif/{prefix}/{*image_request}", get(get_image))

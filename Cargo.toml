@@ -6,6 +6,8 @@ publish = false
 
 [dependencies]
 axum = { version = "0.8.4", features = ["macros"] }
+base16ct = "0.2.0"
+base64ct = { version = "1.8.0", features = ["alloc"] }
 image = { version = "0.25.6", default-features = false, features = [
     "bmp",
     "ff",
@@ -22,4 +24,7 @@ image = { version = "0.25.6", default-features = false, features = [
     "webp",
 ] }
 nom = "8.0.0"
+reqwest = "0.12.20"
+sha2 = "0.10.9"
 tokio = { version = "1.45.1", features = ["rt", "rt-multi-thread"] }
+walkdir = "2.5.0"

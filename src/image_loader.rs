@@ -1,42 +1,90 @@
+use base64ct::{Base64UrlUnpadded, Encoding};
 use image::{DynamicImage, ImageReader};
+use reqwest::StatusCode;
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
-    io::{Error, ErrorKind, Result},
-    path::PathBuf,
+    io::{Cursor, Error, ErrorKind, Result},
+    os::unix::ffi::OsStrExt,
+    path::{Path, PathBuf},
+    pin::Pin,
+    time::Duration,
 };
+use walkdir::WalkDir;
 
+use crate::DEFAULT_USER_AGENT;
 use crate::api::image::ImageRequest;
 
-const ON_DISK_FORMAT_EXT: &'static str = "tif";
+const ON_DISK_FORMAT_EXT: &str = "tif";
 
-pub trait ImageLoader {
-    fn get_image(
+// The AppState contains a HashMap over all loaders, and because get_image() is
+// async, GenericImageLoader is not a dyn-compatible trait. This enum is a
+// work-around for that.
+#[derive(Debug)]
+pub enum ImageLoader {
+    Local(LocalLoader),
+    Proxy(ProxyLoader),
+}
+
+pub trait GenericImageLoader {
+    async fn get_image(
         &self,
-        prefix: &OsStr,
+        prefix: &str,
         request: &ImageRequest,
     ) -> Result<DynamicImage>;
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Default)]
 pub struct LocalLoader {
-    image_dirs: HashMap<OsString, OsString>,
+    image_dirs: HashMap<String, PathBuf>,
+}
+
+type Sha256Bytes = [u8; 32];
+type ContentCacheKey = Sha256Bytes;
+
+#[derive(Debug, Default)]
+pub struct ProxyLoader {
+    cache_dir: PathBuf,
+    uri_to_hash_key: HashMap<String, Sha256Bytes>,
+    client: reqwest::Client,
+}
+
+impl GenericImageLoader for ImageLoader {
+    async fn get_image(
+        &self,
+        prefix: &str,
+        request: &ImageRequest,
+    ) -> Result<DynamicImage> {
+        match self {
+            Self::Local(local) => local.get_image(prefix, request).await,
+            Self::Proxy(proxy) => proxy.get_image(prefix, request).await,
+        }
+    }
 }
 
 impl LocalLoader {
     pub fn new() -> Self {
         Self {
-            image_dirs: HashMap::new(),
+            ..Default::default()
         }
     }
 
-    pub fn insert<S: Into<OsString>>(&mut self, prefix: S, dir: S) {
+    pub fn insert_dir<S, T>(&mut self, prefix: S, dir: T)
+    where
+        S: Into<String>,
+        T: Into<PathBuf>,
+    {
         self.image_dirs.insert(prefix.into(), dir.into());
     }
 }
 
-impl<S: Into<OsString>> FromIterator<(S, S)> for LocalLoader {
-    fn from_iter<T: IntoIterator<Item = (S, S)>>(iter: T) -> Self {
+impl<S, Z> FromIterator<(S, Z)> for LocalLoader
+where
+    S: Into<String>,
+    Z: Into<PathBuf>,
+{
+    fn from_iter<T: IntoIterator<Item = (S, Z)>>(iter: T) -> Self {
         let image_dirs = iter
             .into_iter()
             .map(|(key, val)| (key.into(), val.into()))
@@ -45,10 +93,10 @@ impl<S: Into<OsString>> FromIterator<(S, S)> for LocalLoader {
     }
 }
 
-impl ImageLoader for LocalLoader {
-    fn get_image(
+impl GenericImageLoader for LocalLoader {
+    async fn get_image(
         &self,
-        prefix: &OsStr,
+        prefix: &str,
         request: &ImageRequest,
     ) -> Result<DynamicImage> {
         let dir = OsString::from(
@@ -57,15 +105,135 @@ impl ImageLoader for LocalLoader {
                 .ok_or(Error::from(ErrorKind::NotFound))?,
         );
         let mut file_path = PathBuf::with_capacity(
-            &dir.len()
-                + &request.identifier.as_os_str().len()
+            dir.len()
+                + request.identifier.len()
                 + ".".len()
                 + ON_DISK_FORMAT_EXT.len(),
         );
         file_path.push(&dir);
         file_path.push(&request.identifier);
         file_path.set_extension(ON_DISK_FORMAT_EXT);
-        let image = ImageReader::open(&file_path)?.decode().unwrap();
+        let image =
+            ImageReader::open(&file_path)?.decode().unwrap_or_else(|_| {
+                panic!(
+                    "LocalLoader: failed to decode image file {file_path:?}",
+                )
+            });
         Ok(image)
     }
+}
+
+impl ProxyLoader {
+    pub fn new<T: Into<PathBuf>>(prefix: &str, path: T) -> Self {
+        let cache_dir: PathBuf = path.into();
+        let client = reqwest::ClientBuilder::new()
+            .user_agent(DEFAULT_USER_AGENT)
+            .connect_timeout(Duration::from_millis(2000))
+            .read_timeout(Duration::from_millis(1000))
+            .build()
+            .expect("ProxyLoader: failed to initialize http client");
+        let mut local_loader = LocalLoader::new();
+        for path in get_leaf_dirs(&cache_dir) {
+            local_loader.insert_dir(prefix, path);
+        }
+
+        Self {
+            cache_dir,
+            client,
+            ..Default::default()
+        }
+    }
+
+    fn get_from_cache(&self, key: &ContentCacheKey) -> Option<DynamicImage> {
+        let path = cached_img_path(&self.cache_dir, key);
+        match ImageReader::open(&path) {
+            Ok(reader) => {
+                let image = reader.decode().unwrap_or_else(|_| {
+                    panic!(
+                        "ProxyLoader: {path:?} found in cache but failed to decode",
+                    )
+                });
+                Some(image)
+            }
+            Err(_) => None,
+        }
+    }
+
+    fn get_from_uri(
+        &self,
+        uri: &str,
+    ) -> Pin<Box<impl Future<Output = Option<DynamicImage>>>> {
+        Box::pin(async move {
+            let response = self.client.get(uri).send().await.unwrap();
+            match response.status() {
+                StatusCode::OK => {
+                    let data = response.bytes().await.unwrap();
+                    Some(ImageReader::new(Cursor::new(data)).decode().unwrap())
+                }
+                _ => None,
+            }
+        })
+    }
+}
+
+impl GenericImageLoader for ProxyLoader {
+    async fn get_image(
+        &self,
+        _prefix: &str,
+        request: &ImageRequest,
+    ) -> Result<DynamicImage> {
+        let id = request.identifier.trim_end_matches('=');
+        let uri = Base64UrlUnpadded::decode_vec(id)
+            .map_err(|_| ErrorKind::InvalidInput)?;
+        let uri =
+            String::from_utf8(uri).map_err(|_| ErrorKind::InvalidInput)?;
+        let mut sha256 = Sha256::new();
+        sha256.update(uri.as_bytes());
+        let content_cache_key = self.uri_to_hash_key.get(&uri);
+        let image = if let Some(key) = content_cache_key {
+            self.get_from_cache(key)
+        } else {
+            self.get_from_uri(&uri).await
+        };
+        image.ok_or(ErrorKind::NotFound.into())
+    }
+}
+
+fn get_leaf_dirs<P: AsRef<Path>>(path: P) -> impl Iterator<Item = OsString> {
+    WalkDir::new(path)
+        .min_depth(2)
+        .max_depth(2)
+        .into_iter()
+        .filter_map(|e| {
+            // TODO: log an error on inaccessible directories
+            e.ok()
+                .and_then(|e| {
+                    if e.file_type().is_dir() {
+                        Some(OsString::from(e.path()))
+                    } else {
+                        None
+                    }
+                })
+                .or(None)
+        })
+}
+
+fn cached_img_path(cache: &Path, key: &ContentCacheKey) -> PathBuf {
+    let mut key_str = Vec::new();
+    base16ct::lower::encode_str(key, &mut key_str).unwrap();
+    let sub1 = OsStr::from_bytes(&key_str[0..1]);
+    let sub2 = OsStr::from_bytes(&key_str[2..3]);
+    let mut path = PathBuf::with_capacity(
+        cache.as_os_str().len()
+            + sub1.len()
+            + sub2.len()
+            + key_str.len()
+            + ON_DISK_FORMAT_EXT.len(),
+    );
+    path.push(cache);
+    path.push(sub1);
+    path.push(sub2);
+    path.push(OsStr::from_bytes(&key_str));
+    path.set_extension(ON_DISK_FORMAT_EXT);
+    path
 }

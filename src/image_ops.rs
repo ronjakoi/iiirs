@@ -4,14 +4,14 @@ use std::convert::Into;
 use axum::http::StatusCode;
 use image::{DynamicImage, imageops::FilterType, metadata::Orientation};
 
-use crate::api::image::{Region, Rotation, Size, SizeKind};
+use crate::api::image::{Region, Rotation, RotationDeg, Size, SizeKind};
 
 fn scale_by_pct(int: u32, pct: f32) -> u32 {
     (f64::from(int) * f64::from(pct) / 100.0).round() as u32
 }
 
-pub fn crop_image(mut image: DynamicImage, region: Region) -> DynamicImage {
-    let (x, y, w, h) = match region {
+pub fn crop_image(mut image: DynamicImage, region: &Region) -> DynamicImage {
+    let (x, y, w, h) = match *region {
         Region::Full => return image,
         Region::Square => {
             let sq_width = min(image.width(), image.height());
@@ -33,7 +33,7 @@ pub fn crop_image(mut image: DynamicImage, region: Region) -> DynamicImage {
 
 pub fn resize_image(
     image: DynamicImage,
-    size_req: Size,
+    size_req: &Size,
 ) -> Result<DynamicImage, StatusCode> {
     let filter = FilterType::Triangle;
     let (nw, nh) = match size_req.kind {
@@ -58,39 +58,43 @@ pub fn resize_image(
     }
 }
 
-pub fn rotate_image(
-    image: &mut DynamicImage,
-    rotation: Rotation,
-) -> Result<(), StatusCode> {
-    match rotation {
+pub fn rotate_image(image: &mut DynamicImage, rotation: &Rotation) {
+    match *rotation {
         Rotation {
-            deg: 0 | 360,
+            deg: RotationDeg::Deg0,
             mirror,
         } => {
             if mirror {
                 image.apply_orientation(Orientation::FlipHorizontal);
             }
         }
-        Rotation { deg: 90, mirror } => {
+        Rotation {
+            deg: RotationDeg::Deg90,
+            mirror,
+        } => {
             if mirror {
-                image.apply_orientation(Orientation::FlipHorizontal)
-            };
+                image.apply_orientation(Orientation::FlipHorizontal);
+            }
             image.apply_orientation(Orientation::Rotate90);
         }
         Rotation {
-            deg: 180,
+            deg: RotationDeg::Deg180,
             mirror: true,
         } => image.apply_orientation(Orientation::FlipVertical),
-        Rotation { deg: 180, .. } => {
+        Rotation {
+            deg: RotationDeg::Deg180,
+            ..
+        } => {
             image.apply_orientation(Orientation::Rotate180);
         }
-        Rotation { deg: 270, mirror } => {
+        Rotation {
+            deg: RotationDeg::Deg270,
+            mirror,
+        } => {
             if mirror {
                 image.apply_orientation(Orientation::FlipHorizontal);
             }
             image.apply_orientation(Orientation::Rotate270);
         }
-        _ => return Err(StatusCode::BAD_REQUEST),
-    };
-    Ok(())
+    }
 }
