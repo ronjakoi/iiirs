@@ -1,5 +1,6 @@
+use axum::http::{HeaderName, header};
 use base64ct::{Base64UrlUnpadded, Encoding};
-use image::{DynamicImage, ImageReader};
+use image::{DynamicImage, ImageFormat, ImageReader};
 use reqwest::StatusCode;
 use sha2::{Digest, Sha256};
 use std::{
@@ -8,7 +9,6 @@ use std::{
     io::{Cursor, Error, ErrorKind, Result},
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
-    pin::Pin,
     time::Duration,
 };
 use walkdir::WalkDir;
@@ -159,20 +159,38 @@ impl ProxyLoader {
         }
     }
 
-    fn get_from_uri(
-        &self,
-        uri: &str,
-    ) -> Pin<Box<impl Future<Output = Option<DynamicImage>>>> {
-        Box::pin(async move {
-            let response = self.client.get(uri).send().await.unwrap();
-            match response.status() {
-                StatusCode::OK => {
-                    let data = response.bytes().await.unwrap();
-                    Some(ImageReader::new(Cursor::new(data)).decode().unwrap())
+    async fn get_from_uri(&self, uri: &str) -> Option<DynamicImage> {
+        let response = self.client.get(uri).send().await.unwrap();
+        match response.status() {
+            StatusCode::OK => {
+                let mime = response
+                    .headers()
+                    .get(HeaderName::from(header::CONTENT_TYPE));
+                let mime = mime.as_deref();
+                let format = if let Some(mime) = mime {
+                    ImageFormat::from_mime_type(mime.to_str().unwrap())
+                } else {
+                    let url = response.url();
+                    let filename: String = url
+                        .path_segments()
+                        .iter()
+                        .last()
+                        .unwrap()
+                        .clone()
+                        .collect();
+                    let ext = filename.split('.').last().unwrap();
+                    ImageFormat::from_extension(ext)
                 }
-                _ => None,
+                .unwrap();
+
+                let data = response.bytes().await.unwrap();
+                let mut reader = ImageReader::new(Cursor::new(data));
+                reader.set_format(format);
+
+                Some(reader.decode().unwrap())
             }
-        })
+            _ => None,
+        }
     }
 }
 
