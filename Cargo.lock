@@ -873,6 +873,7 @@ dependencies = [
  "image",
  "nom 8.0.0",
  "reqwest",
+ "serde",
  "sha2",
  "tokio",
  "walkdir",

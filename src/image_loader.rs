@@ -14,7 +14,6 @@ use std::{
 use walkdir::WalkDir;
 
 use crate::DEFAULT_USER_AGENT;
-use crate::api::image::ImageRequest;
 
 const ON_DISK_FORMAT_EXT: &str = "tif";
 
@@ -31,7 +30,7 @@ pub trait GenericImageLoader {
     async fn get_image(
         &mut self,
         prefix: &str,
-        request: &ImageRequest,
+        identifier: &str,
     ) -> Result<DynamicImage>;
 }
 
@@ -55,11 +54,11 @@ impl GenericImageLoader for ImageLoader {
     async fn get_image(
         &mut self,
         prefix: &str,
-        request: &ImageRequest,
+        identifier: &str,
     ) -> Result<DynamicImage> {
         match self {
-            Self::Local(local) => local.get_image(prefix, request).await,
-            Self::Proxy(proxy) => proxy.get_image(prefix, request).await,
+            Self::Local(local) => local.get_image(prefix, identifier).await,
+            Self::Proxy(proxy) => proxy.get_image(prefix, identifier).await,
         }
     }
 }
@@ -98,7 +97,7 @@ impl GenericImageLoader for LocalLoader {
     async fn get_image(
         &mut self,
         prefix: &str,
-        request: &ImageRequest,
+        identifier: &str,
     ) -> Result<DynamicImage> {
         let dir = OsString::from(
             self.image_dirs
@@ -106,13 +105,10 @@ impl GenericImageLoader for LocalLoader {
                 .ok_or(Error::from(ErrorKind::NotFound))?,
         );
         let mut file_path = PathBuf::with_capacity(
-            dir.len()
-                + request.identifier.len()
-                + ".".len()
-                + ON_DISK_FORMAT_EXT.len(),
+            dir.len() + identifier.len() + ".".len() + ON_DISK_FORMAT_EXT.len(),
         );
         file_path.push(&dir);
-        file_path.push(&request.identifier);
+        file_path.push(&identifier);
         file_path.set_extension(ON_DISK_FORMAT_EXT);
         let image =
             ImageReader::open(&file_path)?.decode().unwrap_or_else(|_| {
@@ -236,9 +232,9 @@ impl GenericImageLoader for ProxyLoader {
     async fn get_image(
         &mut self,
         _prefix: &str,
-        request: &ImageRequest,
+        identifier: &str,
     ) -> Result<DynamicImage> {
-        let id = request.identifier.trim_end_matches('=');
+        let id = identifier.trim_end_matches('=');
         let uri = Base64UrlUnpadded::decode_vec(id)
             .map_err(|_| ErrorKind::InvalidInput)?;
         let uri =
@@ -252,7 +248,8 @@ impl GenericImageLoader for ProxyLoader {
         } else {
             None
         };
-        image.ok_or(ErrorKind::NotFound.into())
+        let err = ErrorKind::NotFound.into();
+        image.ok_or(err)
     }
 }
 
