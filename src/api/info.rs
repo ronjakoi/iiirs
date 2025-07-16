@@ -38,7 +38,7 @@ enum ComplianceLevel {
 
 impl ImageInfo {
     pub fn new(prefix: &str, id: &str, image: &DynamicImage) -> Self {
-        let id = ["http://localhost:3000", prefix, id].join("/");
+        let id = ["http://localhost:3000/iiif", prefix, id].join("/");
         Self {
             context: vec![IMAGE_3_CONTEXT.into()],
             id,
