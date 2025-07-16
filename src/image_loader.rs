@@ -134,6 +134,12 @@ impl ProxyLoader {
             local_loader.insert_dir(prefix, path);
         }
 
+        tracing::debug!(
+            "Initialized ProxyLoader for prefix {} with cache dir in {:?}",
+            prefix,
+            &cache_dir
+        );
+
         Self {
             cache_dir,
             client,
@@ -168,6 +174,7 @@ impl ProxyLoader {
         let response = self.client.get(uri).send().await.unwrap();
         match response.status() {
             StatusCode::OK => {
+                tracing::debug!("ProxyLoader: response OK for {}", &uri);
                 let mime = response
                     .headers()
                     .get(HeaderName::from(header::CONTENT_TYPE));
@@ -187,6 +194,11 @@ impl ProxyLoader {
                     ImageFormat::from_extension(ext)
                 }
                 .unwrap();
+
+                tracing::debug!(
+                    "Proxyloader: parsed image format {:?}",
+                    &format
+                );
 
                 let data = response.bytes().await.unwrap();
                 let mut reader = ImageReader::new(Cursor::new(data));
@@ -239,13 +251,27 @@ impl GenericImageLoader for ProxyLoader {
             .map_err(|_| ErrorKind::InvalidInput)?;
         let uri =
             String::from_utf8(uri).map_err(|_| ErrorKind::InvalidInput)?;
+        tracing::debug!("ProxyLoader: {} decoded to {}", &identifier, &uri);
+
         let image = if let Some((key, format)) = self.uri_to_hash_key.get(&uri)
         {
+            tracing::debug!(
+                "ProxyLoader: {} should be in cache, looking on disk",
+                &identifier
+            );
             self.get_from_cache(key, *format)
         } else if let Some((image, format)) = self.get_from_uri(&uri).await {
+            tracing::debug!(
+                "ProxyLoader: writing cache entry for {}",
+                &identifier
+            );
             self.write_in_cache(&image, uri, format).await?;
             Some(image)
         } else {
+            tracing::debug!(
+                "ProxyLoader: {} not found in cache or at source",
+                &identifier
+            );
             None
         };
         let err = ErrorKind::NotFound.into();
